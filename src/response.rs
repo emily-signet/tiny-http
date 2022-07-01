@@ -50,7 +50,7 @@ pub type ResponseBox = Response<Box<dyn Read + Send>>;
 /// Transfer encoding to use when sending the message.
 /// Note that only *supported* encoding are listed here.
 #[derive(Copy, Clone)]
-enum TransferEncoding {
+pub enum TransferEncoding {
     Identity,
     Chunked,
 }
@@ -332,13 +332,13 @@ where
     /// Note: does not flush the writer.
     pub fn raw_print<W: Write>(
         mut self,
-        mut writer: W,
+        writer: W,
         http_version: HTTPVersion,
         request_headers: &[Header],
         do_not_send_body: bool,
         upgrade: Option<&str>,
     ) -> IoResult<()> {
-        let mut transfer_encoding = Some(choose_transfer_encoding(
+        let transfer_encoding = Some(choose_transfer_encoding(
             self.status_code,
             request_headers,
             &http_version,
@@ -346,6 +346,49 @@ where
             false, /* TODO */
             self.chunked_threshold(),
         ));
+
+        // if the transfer encoding is identity, the content length must be known ; therefore if
+        // we don't know it, we buffer the entire response first here
+        // while this is an expensive operation, it is only ever needed for clients using HTTP 1.0
+        let response_buffer = match transfer_encoding {
+            Some(TransferEncoding::Identity) if self.data_length.is_none() => {
+                let mut buf = Vec::new();
+                self.reader.read_to_end(&mut buf)?;
+                let l = buf.len();
+                self.data_length = Some(l);
+                Some(std::io::Cursor::new(buf))
+            },
+            _ => None
+        };
+
+
+        self.print_and_write(writer, http_version, request_headers, do_not_send_body, upgrade, transfer_encoding, |w, r| {
+            if let Some(mut pre_read_response) = response_buffer {
+                std::io::copy(&mut pre_read_response, w).map(|_| ())
+            } else {
+                std::io::copy(r, w).map(|_| ())
+            }
+        })
+    }
+
+    /// Writes the headers, taking a closure that writes out the body.
+    pub fn print_and_write<W: Write>(mut self,
+        mut writer: W,
+        http_version: HTTPVersion,
+        request_headers: &[Header],
+        do_not_send_body: bool,
+        upgrade: Option<&str>,
+        transfer_encoding: Option<TransferEncoding>,
+        write_body: impl FnOnce(&mut dyn Write, &mut R) -> std::io::Result<()>,
+    ) -> IoResult<()> {
+        let mut transfer_encoding = transfer_encoding.or_else(|| Some(choose_transfer_encoding(
+            self.status_code,
+            request_headers,
+            &http_version,
+            &self.data_length,
+            false, /* TODO */
+            self.chunked_threshold(),
+        )));
 
         // add `Date` if not in the headers
         if !self.headers.iter().any(|h| h.field.equiv("Date")) {
@@ -373,21 +416,6 @@ where
             transfer_encoding = None;
         }
 
-        // if the transfer encoding is identity, the content length must be known ; therefore if
-        // we don't know it, we buffer the entire response first here
-        // while this is an expensive operation, it is only ever needed for clients using HTTP 1.0
-        let (mut reader, data_length): (Box<dyn Read>, _) =
-            match (self.data_length, transfer_encoding) {
-                (Some(l), _) => (Box::new(self.reader), Some(l)),
-                (None, Some(TransferEncoding::Identity)) => {
-                    let mut buf = Vec::new();
-                    self.reader.read_to_end(&mut buf)?;
-                    let l = buf.len();
-                    (Box::new(Cursor::new(buf)), Some(l))
-                }
-                _ => (Box::new(self.reader), None),
-            };
-
         // checking whether to ignore the body of the response
         let do_not_send_body = do_not_send_body
             || match self.status_code.0 {
@@ -403,8 +431,8 @@ where
                 .push(Header::from_bytes(&b"Transfer-Encoding"[..], &b"chunked"[..]).unwrap()),
 
             Some(TransferEncoding::Identity) => {
-                assert!(data_length.is_some());
-                let data_length = data_length.unwrap();
+                assert!(self.data_length.is_some());
+                let data_length = self.data_length.unwrap();
 
                 self.headers.push(
                     Header::from_bytes(
@@ -433,15 +461,16 @@ where
                     use chunked_transfer::Encoder;
 
                     let mut writer = Encoder::new(writer);
-                    io::copy(&mut reader, &mut writer)?;
+
+                    write_body(&mut writer, &mut self.reader)?;
                 }
 
                 Some(TransferEncoding::Identity) => {
-                    assert!(data_length.is_some());
-                    let data_length = data_length.unwrap();
+                    assert!(self.data_length.is_some());
+                    let data_length = self.data_length.unwrap();
 
                     if data_length >= 1 {
-                        io::copy(&mut reader, &mut writer)?;
+                        write_body(&mut writer, &mut self.reader)?;
                     }
                 }
 
@@ -450,7 +479,7 @@ where
         }
 
         Ok(())
-    }
+    } 
 
     /// Retrieves the current value of the `Response` status code
     pub fn status_code(&self) -> StatusCode {
@@ -460,6 +489,11 @@ where
     /// Retrieves the current value of the `Response` data length
     pub fn data_length(&self) -> Option<usize> {
         self.data_length
+    }
+
+    /// Overwrite data length
+    pub fn set_data_length(&mut self, new_length: usize) {
+        self.data_length = Some(new_length);
     }
 
     /// Retrieves the current list of `Response` headers
