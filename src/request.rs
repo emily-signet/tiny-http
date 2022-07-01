@@ -73,7 +73,7 @@ pub struct Request {
     must_send_continue: bool,
 
     // If Some, a message must be sent after responding
-    notify_when_responded: Option<Sender<()>>,
+    pub notify_when_responded: Option<Sender<()>>,
 }
 
 struct NotifyOnDrop<R> {
@@ -404,7 +404,7 @@ impl Request {
     /// as the object returned by `into_writer` above.
     ///
     /// This may only be called once on a single request.
-    fn extract_writer_impl(&mut self) -> Box<dyn Write + Send + 'static> {
+    pub fn extract_writer_impl(&mut self) -> Box<dyn Write + Send + 'static> {
         use std::mem;
 
         assert!(self.response_writer.is_some());
@@ -459,7 +459,7 @@ impl Request {
         Self::ignore_client_closing_errors(writer.flush())
     }
 
-    fn ignore_client_closing_errors(result: io::Result<()>) -> io::Result<()> {
+    pub fn ignore_client_closing_errors(result: io::Result<()>) -> io::Result<()> {
         result.or_else(|err| match err.kind() {
             ErrorKind::BrokenPipe => Ok(()),
             ErrorKind::ConnectionAborted => Ok(()),
