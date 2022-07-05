@@ -52,7 +52,7 @@ pub struct Request {
     data_reader: Option<Box<dyn Read + Send + 'static>>,
 
     // if this writer is empty, then the request has been answered
-    response_writer: Option<Box<dyn Write + Send + 'static>>,
+    pub response_writer: Option<Box<dyn Write + Send + 'static>>,
 
     remote_addr: Option<SocketAddr>,
 
