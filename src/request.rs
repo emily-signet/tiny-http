@@ -417,7 +417,7 @@ impl Request {
     /// Extract the body `Reader` object from the Request.
     ///
     /// This may only be called once on a single request.
-    fn extract_reader_impl(&mut self) -> Box<dyn Read + Send + 'static> {
+    pub fn extract_reader_impl(&mut self) -> Box<dyn Read + Send + 'static> {
         use std::mem;
 
         assert!(self.data_reader.is_some());
